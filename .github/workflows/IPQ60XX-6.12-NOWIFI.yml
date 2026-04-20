@@ -5,6 +5,13 @@ on:
   schedule:
     - cron: 0 19 * * *
 
+permissions:
+  contents: write  # 创建发布版本需要此权限
+  # 如果还需要其他操作，可以添加：
+  # actions: write
+  # issues: write
+  # packages: write
+
 env:
   REPO_URL: https://github.com/LiBwrt/openwrt-6.x.git
   REPO_BRANCH: main-nss
