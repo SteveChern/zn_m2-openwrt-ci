@@ -3,7 +3,7 @@ name: IPQ60XX-6.12-NOWIFI
 on:
   workflow_dispatch:
   schedule:
-    - cron: 0 19 * * *
+    - cron: 0 19 * * 6
 
 permissions:
   contents: write  # 创建发布版本需要此权限
