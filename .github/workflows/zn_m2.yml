@@ -1,0 +1,140 @@
+name: ZN-M2-6.12-NOWIFI-NOUSB
+
+on:
+  workflow_dispatch:
+  schedule:
+    # cron 按 UTC 解析：11:00 UTC = 北京时间每月 1 号 19:00
+    - cron: 0 11 1 * *
+
+permissions:
+  contents: write
+
+concurrency:
+  group: zn-m2-build
+  cancel-in-progress: true
+
+env:
+  REPO_URL: https://github.com/LiBwrt/LibWrt.git
+  REPO_BRANCH: 25.12-nss
+  CONFIG_FILE: configs/zn_m2.config
+  DIY_SCRIPT: diy.sh
+  TZ: Asia/Shanghai
+
+jobs:
+  Build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Initialization Environment(初始化环境)
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        sudo bash -c 'bash <(curl -sL https://build-scripts.immortalwrt.org/init_build_environment.sh)'
+        sudo -E apt -yqq install dos2unix libfuse-dev
+        sudo -E apt -yqq autoremove --purge
+        sudo -E apt -yqq autoclean
+        sudo -E apt -yqq clean
+        sudo timedatectl set-timezone "$TZ"
+
+    - name: Combine Disks(合并磁盘)
+      uses: easimon/maximize-build-space@master
+      with:
+        swap-size-mb: 1024
+        temp-reserve-mb: 100
+        root-reserve-mb: 1024
+
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Clone Source Code(克隆源码)
+      run: |
+        for i in 1 2 3; do
+          if git clone --depth 1 -b $REPO_BRANCH $REPO_URL openwrt; then
+            break
+          fi
+          echo "clone failed, retry $i"
+          rm -rf openwrt
+          sleep 15
+        done
+        test -d openwrt
+        cd openwrt
+        echo "OPENWRT_PATH=$PWD" >> $GITHUB_ENV
+        echo "SOURCE_INFO=$(git show -s --date=short --format='%h %cd %s')" >> $GITHUB_ENV
+
+    - name: Cache Toolchain(缓存工具链)
+      uses: HiGarfield/cachewrtbuild@main
+      with:
+        ccache: false
+        # 配置或裁剪脚本变化时自动换 key，避免拿到过期缓存
+        mixkey: zn_m2-${{ env.REPO_BRANCH }}-${{ hashFiles('configs/zn_m2.config', 'diy.sh') }}
+        prefix: ${{ env.OPENWRT_PATH }}
+
+    - name: Install Feeds(安装feeds)
+      run: |
+        cd $OPENWRT_PATH
+        ./scripts/feeds update -a
+        ./scripts/feeds install -a
+
+    - name: Apply Configuration(加载配置并裁剪 WiFi/USB)
+      run: |
+        cp -a files $OPENWRT_PATH/
+        cp $CONFIG_FILE $OPENWRT_PATH/.config
+        chmod +x $DIY_SCRIPT
+        cd $OPENWRT_PATH
+        $GITHUB_WORKSPACE/$DIY_SCRIPT
+        make defconfig
+
+    - name: Verify Trimmed Configuration(校验裁剪结果)
+      run: |
+        cd $OPENWRT_PATH
+        bad=$(grep -E '^CONFIG_PACKAGE_(kmod-ath11k|kmod-ath11k-ahb|kmod-ath11k-pci|kmod-mac80211|kmod-cfg80211|ath11k-firmware-ipq6018|ath11k-firmware-ipq6018-ddwrt|wpad-openssl|hostapd-common|wifi-scripts|kmod-usb-core|kmod-usb3|kmod-usb-dwc3|kmod-usb-dwc3-qcom|kmod-usb-xhci-hcd|kmod-usb-storage|kmod-usb-net|automount)=[ym]$' .config || true)
+        if [ -n "$bad" ]; then
+          echo "::error::WiFi/USB 包仍然存在，裁剪未生效"
+          echo "$bad"
+          exit 1
+        fi
+        grep -q '^CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_zn_m2=y$' .config
+        test "$(grep -c '^CONFIG_TARGET_DEVICE_.*=y$' .config)" -eq 1
+
+    - name: Download Packages(下载软件包)
+      run: |
+        cd $OPENWRT_PATH
+        make -j$(nproc) download
+        find dl -size -1024c -exec ls -l {} \;
+        find dl -size -1024c -exec rm -f {} \;
+
+    - name: Compile Firmware(开始编译固件)
+      run: |
+        cd $OPENWRT_PATH
+        make -j$(nproc) || make -j1 V=s
+        echo "DATE=$(date +'%Y-%m-%d %H:%M:%S')" >> $GITHUB_ENV
+        echo "FILE_DATE=$(date +'%Y.%m.%d')" >> $GITHUB_ENV
+
+    - name: Organize Files(整理文件)
+      run: |
+        cd $OPENWRT_PATH/bin/targets/*/*
+        cat sha256sums
+        echo "VERSION_KERNEL=$(find -type f -name '*.manifest' -exec grep -oP '^kernel - \K.*?(?=~|-\d+-)' {} \;)" >> $GITHUB_ENV
+        cp $OPENWRT_PATH/.config build.config
+        mv -f $OPENWRT_PATH/bin/packages/*/*/*.apk packages
+        tar -zcf Packages.tar.gz packages
+        rm -rf packages feeds.buildinfo version.buildinfo
+        echo "FIRMWARE_PATH=$PWD" >> $GITHUB_ENV
+
+    - name: Release(发布固件)
+      uses: ncipollo/release-action@v1
+      with:
+        name: ZN-M2 ${{ env.FILE_DATE }}
+        tag: ZN-M2-${{ env.FILE_DATE }}
+        allowUpdates: false
+        token: ${{ secrets.GITHUB_TOKEN }}
+        artifacts: ${{ env.FIRMWARE_PATH }}/*
+        body: |
+          **ZN-M2 无 WiFi / 无 USB 固件**
+
+          - 设备：兆能 ZN-M2（qualcommax / ipq60xx，NSS 加速）
+          - 源码：${{ env.REPO_URL }}（${{ env.REPO_BRANCH }}）
+          - 内核：${{ env.VERSION_KERNEL }}
+          - 构建时间：${{ env.DATE }}
+          - 源码最后更新：${{ env.SOURCE_INFO }}
+          - 默认地址：192.168.1.1，默认密码：password
