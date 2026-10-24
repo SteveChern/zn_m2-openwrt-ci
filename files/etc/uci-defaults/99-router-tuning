@@ -1,0 +1,26 @@
+#!/bin/sh
+# 首次启动执行一次，成功后由 /etc/init.d/boot 的 run_uci_defaults 自动删除。
+
+# zram 压缩算法：/etc/init.d/zram 在该选项缺失时硬编码回落 lzo，lzo-rle 在 aarch64 上更快且压缩比更好
+uci -q set system.@system[0].zram_comp_algo='lzo-rle'
+
+# dnsmasq 主实例默认也会绑定 WAN 接口（含其公网 IPv6 地址）的 53 端口
+uci -q show dhcp.@dnsmasq[0].notinterface | grep -q wan || \
+	uci -q add_list dhcp.@dnsmasq[0].notinterface='wan'
+
+uci commit system
+uci commit dhcp
+
+# vm.swappiness 必须落在 /etc/sysctl.conf：/etc/init.d/sysctl 的加载顺序是
+# /etc/sysctl.d/*.conf 在前、/etc/sysctl.conf 在后，sysctl.d 里的同名项会被覆盖
+for key in 'vm.swappiness=100' 'net.netfilter.nf_conntrack_max=8192'; do
+	name=${key%%=*}
+	grep -q "^$name=" /etc/sysctl.conf 2>/dev/null && sed -i "/^$name=/d" /etc/sysctl.conf
+	echo "$key" >> /etc/sysctl.conf
+done
+
+# 健康检查的 cron 条目（幂等追加）
+grep -q hp-health /etc/crontabs/root 2>/dev/null || \
+	echo '*/10 * * * * /usr/sbin/hp-health.sh' >> /etc/crontabs/root
+
+exit 0
