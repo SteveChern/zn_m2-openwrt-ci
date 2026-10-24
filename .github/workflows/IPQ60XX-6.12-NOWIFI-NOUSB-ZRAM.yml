@@ -3,7 +3,8 @@ name: IPQ60XX-6.12-NOWIFI-NOUSB-ZRAM
 on:
   workflow_dispatch:
   schedule:
-    - cron: 0 19 1-7 * 0
+    # cron 按 UTC 解析：11:00 UTC = 北京时间每月 1 号 19:00
+    - cron: 0 11 1 * *
 
 permissions:
   contents: write  # 创建发布版本需要此权限
@@ -13,8 +14,8 @@ permissions:
   # packages: write
 
 env:
-  REPO_URL: https://github.com/LiBwrt/openwrt-6.x.git
-  REPO_BRANCH: main-nss
+  REPO_URL: https://github.com/LiBwrt/LibWrt.git
+  REPO_BRANCH: 25.12-nss
   CONFIG_FILE: configs/ipq60xx-6.12-nowifi-nousb.config
   DIY_SCRIPT: libwrt.sh
   CLASH_KERNEL: amd64
